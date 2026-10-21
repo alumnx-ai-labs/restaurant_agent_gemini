@@ -1,10 +1,7 @@
-from langchain_core.tools import tool
-
 # ============================================================
 # TOOL 1: Search Restaurants by Cuisine
 # ============================================================
 
-@tool
 def search_restaurants_by_cuisine(cuisine_type: str) -> list:
     """
     Search for restaurants by cuisine type.
@@ -43,7 +40,6 @@ def search_restaurants_by_cuisine(cuisine_type: str) -> list:
 # TOOL 2: Get Restaurant Details
 # ============================================================
 
-@tool
 def get_restaurant_details(restaurant_name: str) -> dict:
     """
     Get detailed information about a restaurant,
@@ -170,7 +166,6 @@ def get_restaurant_details(restaurant_name: str) -> dict:
 # TOOL 3: Check Reservation Availability
 # ============================================================
 
-@tool
 def check_reservation_availability(
     restaurant_name: str,
     date: str,
@@ -275,4 +270,59 @@ def check_reservation_availability(
     )
 
 
-tools = [search_restaurants_by_cuisine, get_restaurant_details, check_reservation_availability]
+# ============================================================
+# Registry + Gemini function declarations
+# ============================================================
+
+TOOL_FUNCTIONS = {
+    "search_restaurants_by_cuisine": search_restaurants_by_cuisine,
+    "get_restaurant_details": get_restaurant_details,
+    "check_reservation_availability": check_reservation_availability,
+}
+
+TOOL_DECLARATIONS = [
+    {
+        "name": "search_restaurants_by_cuisine",
+        "description": (
+            "Search for restaurants by cuisine type. "
+            "Supported cuisines: Indian, Italian, Chinese, Mexican."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cuisine_type": {"type": "string", "description": "e.g. Italian"}
+            },
+            "required": ["cuisine_type"],
+        },
+    },
+    {
+        "name": "get_restaurant_details",
+        "description": (
+            "Get detailed information about a restaurant, "
+            "including address, phone, hours and specialties."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "restaurant_name": {"type": "string", "description": "Exact restaurant name"}
+            },
+            "required": ["restaurant_name"],
+        },
+    },
+    {
+        "name": "check_reservation_availability",
+        "description": (
+            "Check if a restaurant has reservation availability "
+            "for a specific date and number of people."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "restaurant_name": {"type": "string"},
+                "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                "party_size": {"type": "integer", "description": "Number of people"},
+            },
+            "required": ["restaurant_name", "date", "party_size"],
+        },
+    },
+]

@@ -8,13 +8,11 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, ToolMessage
-from langsmith import traceable
+from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
 
-from tools import tools
+from tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,9 +40,15 @@ the requested information is outside your available capabilities.
 Be friendly, conversational, and concise.
 """
 
-model = init_chat_model(os.getenv("MODEL", "google_genai:gemini-3.8-flash"))
+MODEL = os.getenv("MODEL", "gemini-3.8-flash").removeprefix("google_genai:")
+MAX_TOOL_ROUNDS = 5
 
-agent = create_agent(model=model, tools=tools, system_prompt=system_prompt)
+client = genai.Client()  # reads GOOGLE_API_KEY from the environment
+
+config = types.GenerateContentConfig(
+    system_instruction=system_prompt,
+    tools=[types.Tool(function_declarations=TOOL_DECLARATIONS)],
+)
 
 app = FastAPI(title="Restaurant Assistant API")
 
@@ -72,44 +76,57 @@ class ChatResponse(BaseModel):
     tool_calls: list[dict]  # [{name, args, output}]
 
 
-def _text(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+def _run_tool(name: str, args: dict):
+    fn = TOOL_FUNCTIONS.get(name)
+    if fn is None:
+        return {"error": f"Unknown tool '{name}'"}
+    try:
+        return fn(**args)
+    except Exception as e:  # report to the model instead of crashing the turn
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+async def run_turn(req: ChatRequest) -> ChatResponse:
+    contents = [
+        types.Content(
+            role="model" if m.role == "assistant" else "user",
+            parts=[types.Part(text=m.content)],
         )
-    return str(content) if content is not None else ""
+        for m in req.history
+    ]
+    contents.append(types.Content(role="user", parts=[types.Part(text=req.message)]))
 
+    tool_calls: list[dict] = []
+    for _ in range(MAX_TOOL_ROUNDS):
+        response = await client.aio.models.generate_content(
+            model=MODEL, contents=contents, config=config
+        )
+        calls = response.function_calls or []
+        if not calls:
+            return ChatResponse(reply=response.text or "", tool_calls=tool_calls)
 
-def _tool_calls(messages: list) -> list[dict]:
-    """Pair each tool call the agent made with its output."""
-    outputs = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
-    calls = []
-    for m in messages:
-        if not isinstance(m, AIMessage):
-            continue
-        for c in m.tool_calls:
-            out = outputs.get(c["id"])
-            raw = out.content if out else ""
-            calls.append(
+        # keep the model's turn verbatim, then answer every call it made
+        contents.append(response.candidates[0].content)
+        result_parts = []
+        for call in calls:
+            args = dict(call.args or {})
+            out = _run_tool(call.name, args)
+            tool_calls.append(
                 {
-                    "name": c["name"],
-                    "args": c["args"],
-                    "output": raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False),
+                    "name": call.name,
+                    "args": args,
+                    "output": out if isinstance(out, str) else json.dumps(out, ensure_ascii=False),
                 }
             )
-    return calls
+            result_parts.append(
+                types.Part.from_function_response(name=call.name, response={"result": out})
+            )
+        contents.append(types.Content(role="user", parts=result_parts))
 
-
-@traceable(name="Gemini Restaurant Agent", run_type="chain")
-async def run_turn(req: ChatRequest) -> ChatResponse:
-    messages = [m.model_dump() for m in req.history]
-    messages.append({"role": "user", "content": req.message})
-    result = await agent.ainvoke({"messages": messages})
-
-    new = result["messages"][len(messages):]  # only this turn's messages
-    return ChatResponse(reply=_text(new[-1].content), tool_calls=_tool_calls(new))
+    return ChatResponse(
+        reply="Sorry, I couldn't complete that request. Please try rephrasing.",
+        tool_calls=tool_calls,
+    )
 
 
 @app.post("/chat", response_model=ChatResponse)
