@@ -6,7 +6,7 @@ Tools (`tools.py`): search restaurants by cuisine, get restaurant details, check
 
 Endpoints: `POST /chat` and `GET /health`. Run: `uvicorn main:app --reload`.
 
-Environment variables (set in `.env` locally or in the host's settings; never commit them): `GOOGLE_API_KEY`, `MODEL` (optional, default `gemini-3.8-flash`), `CORS_ORIGINS`.
+Environment variables (set in `.env` locally or in the host's settings; never commit them): `GOOGLE_API_KEY`, `MODEL` (optional, default `gemini-3.5-flash-lite`), `CORS_ORIGINS`.
 
 ## How a chat turn works
 
@@ -60,10 +60,17 @@ the requested information is outside your available capabilities.
 Be friendly, conversational, and concise.
 """
 
-MODEL = os.getenv("MODEL", "gemini-3.8-flash").removeprefix("google_genai:")
+MODEL = os.getenv("MODEL", "gemini-3.5-flash-lite").removeprefix("google_genai:")
 MAX_TOOL_ROUNDS = 5
 
-client = genai.Client()  # reads GOOGLE_API_KEY from the environment
+# Reads GOOGLE_API_KEY from the environment. Fail fast when Gemini is overloaded:
+# one retry and a 30 s timeout instead of waiting through many backoffs.
+client = genai.Client(
+    http_options=types.HttpOptions(
+        timeout=30_000,
+        retry_options=types.HttpRetryOptions(attempts=2),
+    )
+)
 
 config = types.GenerateContentConfig(
     system_instruction=system_prompt,
